@@ -1,0 +1,452 @@
+# Imports
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import (
+    Dense, 
+    Conv2D, 
+    Conv2DTranspose, 
+    Flatten, 
+    Reshape,
+    LeakyReLU
+)
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD, Nadam
+from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
+from tensorflow.keras.regularizers import l1, l2
+import matplotlib.pyplot as plt
+
+# Load and preprocess the data
+from tensorflow.keras.datasets import mnist
+
+# Load MNIST dataset
+(X_train, _), (X_test, _) = mnist.load_data()
+
+# Convert to float32 and normalize
+X_train = X_train.astype('float32') / 255.0
+X_test = X_test.astype('float32') / 255.0
+
+# Add channel dimension
+X_train = X_train.reshape(-1, 28, 28, 1)
+X_test = X_test.reshape(-1, 28, 28, 1)
+
+print("Training data shape:", X_train.shape)
+print("Test data shape:", X_test.shape)
+
+# Define Class
+class Autoencoder(Model):
+    def __init__(self, encoder, decoder):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def call(self, inputs):
+        encoded = self.encoder(inputs)
+        decoded = self.decoder(encoded)
+        return decoded
+# Configurations and Architecture Variations
+configurations = [
+    {
+        'name': 'baseline',
+        'epochs': 50,
+        'batch_size': 128,
+        'optimizer': Adam(learning_rate=0.001),
+        'activation': 'relu',
+        'latent_dim': 2,
+        'architecture': 'standard',
+        'regularization': None
+    },
+    {
+        'name': 'deep_architecture',
+        'epochs': 50,
+        'batch_size': 128,
+        'optimizer': Adam(learning_rate=0.001),
+        'activation': 'relu',
+        'latent_dim': 2,
+        'architecture': 'deep',
+        'regularization': None
+    },
+    {
+        'name': 'wide_architecture',
+        'epochs': 50,
+        'batch_size': 128,
+        'optimizer': Adam(learning_rate=0.001),
+        'activation': 'relu',
+        'latent_dim': 2,
+        'architecture': 'wide',
+        'regularization': None
+    },
+    {
+        'name': 'leaky_relu',
+        'epochs': 50,
+        'batch_size': 128,
+        'optimizer': Adam(learning_rate=0.001),
+        'activation': 'leaky_relu',
+        'latent_dim': 2,
+        'architecture': 'standard',
+        'regularization': None
+    },
+    {
+        'name': 'selu',
+        'epochs': 50,
+        'batch_size': 128,
+        'optimizer': Adam(learning_rate=0.001),
+        'activation': 'selu',
+        'latent_dim': 2,
+        'architecture': 'standard',
+        'regularization': None
+    }
+]  # Reduced number of configurations for faster testing
+
+# Helper Functions
+def get_activation(activation_name):
+    if activation_name == 'leaky_relu':
+        return tf.keras.layers.LeakyReLU(alpha=0.2)
+    return activation_name
+
+def create_encoder(config, input_shape):
+    encoder = Sequential()
+    
+    # Get regularizer if specified
+    reg = None
+    if config['regularization'] == 'l1':
+        reg = l1(0.01)
+    elif config['regularization'] == 'l2':
+        reg = l2(0.01)
+    
+    activation = get_activation(config['activation'])
+    
+    if config['architecture'] == 'standard':
+        encoder.add(Conv2D(48, kernel_size=3, strides=1, padding='same', 
+                          activation=activation, input_shape=input_shape,
+                          kernel_regularizer=reg))
+        encoder.add(Conv2D(96, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(96, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(96, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'deep':
+        encoder.add(Conv2D(32, kernel_size=3, strides=1, padding='same',
+                          activation=activation, input_shape=input_shape,
+                          kernel_regularizer=reg))
+        encoder.add(Conv2D(64, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(64, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(128, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(128, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(256, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'wide':
+        encoder.add(Conv2D(128, kernel_size=3, strides=1, padding='same',
+                          activation=activation, input_shape=input_shape,
+                          kernel_regularizer=reg))
+        encoder.add(Conv2D(256, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(256, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+    
+    enc_shape = encoder.output_shape[1:]
+    encoder.add(Flatten())
+    encoder.add(Dense(units=config['latent_dim'], name='latent_space',
+                     kernel_regularizer=reg))
+    
+    return encoder, enc_shape
+
+def create_decoder(config, enc_shape, latent_dim):
+    decoder = Sequential()
+    
+    reg = None
+    if config['regularization'] == 'l1':
+        reg = l1(0.01)
+    elif config['regularization'] == 'l2':
+        reg = l2(0.01)
+    
+    activation = get_activation(config['activation'])
+    
+    decoder.add(Dense(units=np.prod(enc_shape), input_shape=(latent_dim,),
+                     kernel_regularizer=reg))
+    decoder.add(Reshape(enc_shape))
+    
+    if config['architecture'] == 'standard':
+        decoder.add(Conv2DTranspose(96, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(96, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(48, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'deep':
+        decoder.add(Conv2DTranspose(256, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(128, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(128, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(64, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(64, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(32, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'wide':
+        decoder.add(Conv2DTranspose(256, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(256, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(128, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+    
+    decoder.add(Conv2DTranspose(1, kernel_size=3, strides=1, padding='same',
+                               activation='sigmoid'))
+    
+    return decoder
+
+def train_autoencoder(config, X_train, X_test):
+    encoder, enc_shape = create_encoder(config, X_train.shape[1:])
+    decoder = create_decoder(config, enc_shape, config['latent_dim'])
+    
+    autoencoder = Autoencoder(encoder, decoder)
+    autoencoder.compile(optimizer=config['optimizer'], loss='mse')
+    
+    callbacks = [
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6),
+        EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    ]
+    
+    history = autoencoder.fit(
+        X_train, X_train,
+        epochs=config['epochs'],
+        batch_size=config['batch_size'],
+        validation_data=(X_test, X_test),
+        callbacks=callbacks,
+        verbose=1
+    )
+    
+    return autoencoder, history
+
+def plot_results(histories):
+    plt.figure(figsize=(20, 10))
+    
+    plt.subplot(1, 2, 1)
+    for name, history in histories.items():
+        plt.plot(history.history['loss'], label=f'{name} (train)')
+    plt.title('Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    plt.subplot(1, 2, 2)
+    for name, history in histories.items():
+        plt.plot(history.history['val_loss'], label=f'{name} (val)')
+    plt.title('Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.show()
+
+def visualize_reconstructions(autoencoder, X_test, n=10):
+    indices = np.random.randint(0, X_test.shape[0], n)
+    test_images = X_test[indices]
+    reconstructions = autoencoder.predict(test_images)
+    
+    plt.figure(figsize=(20, 4))
+    for i in range(n):
+        plt.subplot(2, n, i + 1)
+        plt.imshow(test_images[i].reshape(28, 28), cmap='gray')
+        plt.axis('off')
+        if i == 0:
+            plt.title('Original')
+            
+        plt.subplot(2, n, n + i + 1)
+        plt.imshow(reconstructions[i].reshape(28, 28), cmap='gray')
+        plt.axis('off')
+        if i == 0:
+            plt.title('Reconstructed')
+            
+    plt.tight_layout()
+    plt.show()
+
+# Run Experiments
+def get_activation(activation_name):
+    if activation_name == 'leaky_relu':
+        return tf.keras.layers.LeakyReLU(alpha=0.2)
+    return activation_name
+
+def create_encoder(config, input_shape):
+    encoder = Sequential()
+    
+    # Get regularizer if specified
+    reg = None
+    if config['regularization'] == 'l1':
+        reg = l1(0.01)
+    elif config['regularization'] == 'l2':
+        reg = l2(0.01)
+    
+    activation = get_activation(config['activation'])
+    
+    if config['architecture'] == 'standard':
+        encoder.add(Conv2D(48, kernel_size=3, strides=1, padding='same', 
+                          activation=activation, input_shape=input_shape,
+                          kernel_regularizer=reg))
+        encoder.add(Conv2D(96, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(96, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(96, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'deep':
+        encoder.add(Conv2D(32, kernel_size=3, strides=1, padding='same',
+                          activation=activation, input_shape=input_shape,
+                          kernel_regularizer=reg))
+        encoder.add(Conv2D(64, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(64, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(128, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(128, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(256, kernel_size=3, strides=1, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'wide':
+        encoder.add(Conv2D(128, kernel_size=3, strides=1, padding='same',
+                          activation=activation, input_shape=input_shape,
+                          kernel_regularizer=reg))
+        encoder.add(Conv2D(256, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+        encoder.add(Conv2D(256, kernel_size=3, strides=2, padding='same',
+                          activation=activation, kernel_regularizer=reg))
+    
+    enc_shape = encoder.output_shape[1:]
+    encoder.add(Flatten())
+    encoder.add(Dense(units=config['latent_dim'], name='latent_space',
+                     kernel_regularizer=reg))
+    
+    return encoder, enc_shape
+
+def create_decoder(config, enc_shape, latent_dim):
+    decoder = Sequential()
+    
+    reg = None
+    if config['regularization'] == 'l1':
+        reg = l1(0.01)
+    elif config['regularization'] == 'l2':
+        reg = l2(0.01)
+    
+    activation = get_activation(config['activation'])
+    
+    decoder.add(Dense(units=np.prod(enc_shape), input_shape=(latent_dim,),
+                     kernel_regularizer=reg))
+    decoder.add(Reshape(enc_shape))
+    
+    if config['architecture'] == 'standard':
+        decoder.add(Conv2DTranspose(96, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(96, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(48, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'deep':
+        decoder.add(Conv2DTranspose(256, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(128, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(128, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(64, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(64, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(32, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+    
+    elif config['architecture'] == 'wide':
+        decoder.add(Conv2DTranspose(256, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(256, kernel_size=3, strides=2, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+        decoder.add(Conv2DTranspose(128, kernel_size=3, strides=1, padding='same',
+                                  activation=activation, kernel_regularizer=reg))
+    
+    decoder.add(Conv2DTranspose(1, kernel_size=3, strides=1, padding='same',
+                               activation='sigmoid'))
+    
+    return decoder
+
+def train_autoencoder(config, X_train, X_test):
+    encoder, enc_shape = create_encoder(config, X_train.shape[1:])
+    decoder = create_decoder(config, enc_shape, config['latent_dim'])
+    
+    autoencoder = Autoencoder(encoder, decoder)
+    autoencoder.compile(optimizer=config['optimizer'], loss='mse')
+    
+    callbacks = [
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6),
+        EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    ]
+    
+    history = autoencoder.fit(
+        X_train, X_train,
+        epochs=config['epochs'],
+        batch_size=config['batch_size'],
+        validation_data=(X_test, X_test),
+        callbacks=callbacks,
+        verbose=1
+    )
+    
+    return autoencoder, history
+
+def plot_results(histories):
+    plt.figure(figsize=(20, 10))
+    
+    plt.subplot(1, 2, 1)
+    for name, history in histories.items():
+        plt.plot(history.history['loss'], label=f'{name} (train)')
+    plt.title('Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    plt.subplot(1, 2, 2)
+    for name, history in histories.items():
+        plt.plot(history.history['val_loss'], label=f'{name} (val)')
+    plt.title('Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.show()
+
+def visualize_reconstructions(autoencoder, X_test, n=10):
+    indices = np.random.randint(0, X_test.shape[0], n)
+    test_images = X_test[indices]
+    reconstructions = autoencoder.predict(test_images)
+    
+    plt.figure(figsize=(20, 4))
+    for i in range(n):
+        plt.subplot(2, n, i + 1)
+        plt.imshow(test_images[i].reshape(28, 28), cmap='gray')
+        plt.axis('off')
+        if i == 0:
+            plt.title('Original')
+            
+        plt.subplot(2, n, n + i + 1)
+        plt.imshow(reconstructions[i].reshape(28, 28), cmap='gray')
+        plt.axis('off')
+        if i == 0:
+            plt.title('Reconstructed')
+            
+    plt.tight_layout()
+    plt.show()
